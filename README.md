@@ -1,12 +1,47 @@
-### **** IMPORTANT DOCKER NOTE ****
-As of Feb 29,2020 there is a confirmed IP aliasing bug in the latest docker release that applies to both Mac and Windows Docker Desktop versions. This bug breaks Splunk N' A Box. 
+## 2026 update: Splunk 10.x (v6.0)
 
-Downgrading to the latest docker 2.1.x version (2.1.0.5) solves the problem. Here are the direct download links.
-Mac: https://download.docker.com/mac/stable/40693/Docker.dmg
+This fork modernizes Mohamad Hassan's original Splunk N' Box (2017–2020) for current Splunk and Docker on **Linux**.
 
-Windows: https://download.docker.com/win/stable/40693/Docker%20Desktop%20Installer.exe
+**What changed**
+- Uses the **official `splunk/splunk` image** (Splunk 10.x by default; any tag can be picked from the menu or with `SPLUNK_VERSION`).
+- The admin password is set when each container starts (`SPLUNK_PASSWORD`). The old `changeme` reset is gone.
+- Splunk 10 requires accepting the **Splunk General Terms**. The script asks once and never accepts on your behalf.
+- **Networking:** container IPs (`10.42.0.100–250`) live on a private `splunknbox0` dummy interface, so they can't clash with your LAN. If the `dummy` kernel module is missing, it falls back to the loopback interface. It uses `ip` instead of `ifconfig`.
+- **Cluster commands** use the manager/peer terminology (`-mode manager|peer`, `-manager_uri`, `licenser-localpeer`).
+- **Licensing:** with no license files, every node runs Splunk's built-in **60-day Enterprise trial**. Drop real `*.lic` files (e.g. a Developer license) into `splunk_licenses/` to use a License Manager instead.
+- Builds wait for each container's health check instead of fixed sleeps, since the official image takes 1–5 minutes to provision.
+- Works with Docker 29's new `docker images` output.
+- The demo/workshop menus are disabled (they pulled from Splunk's internal registry).
 
-<br><br>
+**Quick start (Ubuntu/Debian)**
+```bash
+# Docker Engine installed, your user in the docker group (log out/in after this)
+sudo usermod -aG docker $USER
+
+git clone https://github.com/gmalik1342/splunk-n-box
+cd splunk-n-box
+SPLUNK_ACCEPT_GENERAL_TERMS=yes ./splunknbox.sh
+```
+Then open `http://10.42.0.101:8000` (user `admin`, password `hello1234`) from the same machine.
+
+**Settings you can override with environment variables**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SPLUNK_VERSION` | `latest` | Image tag, e.g. `10.0`, `9.4`, `9.4.3` |
+| `SPLUNKNBOX_PASSWORD` | `hello1234` | Admin password (8+ chars, no spaces) |
+| `SPLUNKNBOX_SECRET` | `splunknbox-cluster-key` | Cluster `pass4SymmKey` |
+| `SPLUNK_ACCEPT_GENERAL_TERMS` | *(ask)* | `yes` to skip the Terms question |
+| `SPLUNKNBOX_IFACE` | `splunknbox0` | Set to a real NIC (e.g. `eth0`) only if other machines must reach the lab |
+| `SPLUNKNBOX_START_IP` / `SPLUNKNBOX_END_IP` | `10.42.0.100` / `10.42.0.250` | Alias range (must be unused on your network) |
+| `SPLUNKNBOX_LOGIN_SCREEN` | `no` | `yes` adds the custom login banner (one extra restart per container) |
+| `SPLUNKNBOX_DNS` | *(Docker default)* | DNS server for containers |
+
+**Sizing:** each Splunk 10 container wants roughly 1–2 GB of RAM. A single-site cluster (LM, CM, MC, DEP, 3 IDX, 3 SH) is comfortable on a 16 GB+ host. Multi-site builds need more.
+
+The original README follows.
+
+---
 
 ## Videos:
  :link: Splunk N' Box full presentation (.conf2017): https://youtu.be/tXeFwWTXtD4<br>

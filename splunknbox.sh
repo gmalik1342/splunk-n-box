@@ -1,7 +1,7 @@
 #!/bin/bash
 #################################################################################
-#	__VERSION: 5.1-19 $
-#	__DATE: Thu May 31,2018 - 06:18:11PM -0600 $
+#	__VERSION: 6.0-1 $
+#	__DATE: Thu Nov 19,2026 - 10:30:00PM -0500 $
 #	__AUTHOR: mhassan2 <mhassan@splunk.com> $
 #################################################################################
 
@@ -51,20 +51,32 @@
 #		-v6	even more verbosity (debug)
 #################################################################################
 
+#################################################################################
+# 2026 MODERNIZATION NOTES (branch modernize-splunk10)
+#	-Uses the official splunk/splunk image (Splunk 10.x by default)
+#	-Admin password is set at container start via SPLUNK_PASSWORD (no changeme reset)
+#	-Splunk 10 requires accepting the Splunk General Terms (prompted once)
+#	-Linux IP aliases live on a private dummy interface (no clash with your LAN)
+#	-Cluster CLI uses manager/peer terminology (-mode manager/peer, -manager_uri)
+#	-License files are optional: with none, every node runs the 60-day Enterprise trial
+#	Any setting below can be overridden with an environment variable, e.g.
+#	SPLUNK_VERSION=9.4 SPLUNKNBOX_PASSWORD='S3cret!pass' ./splunknbox.sh
+#################################################################################
+
 #-------------Network stuff --------
 ETH_OSX="lo0"			#default interface to use with OSX laptop (el captain)
-ETH_LINUX="ens3"		#default interface to use with Linux server (Ubuntu 16.04
+#Linux: "splunknbox0" = private dummy interface created by the script (recommended, local access only).
+#Set to a real NIC name (e.g. eth0) only if other machines on your LAN must reach the containers,
+#and then pick an alias range below that is NOT used on your LAN.
+ETH_LINUX="${SPLUNKNBOX_IFACE:-splunknbox0}"
 
 #-------------IP aliases --------
-#LINUX is routed and hosts can be reached from anywhere in the network
-#START_ALIAS_LINUX="192.168.1.100";  	END_ALIAS_LINUX="192.168.1.254"
-START_ALIAS_LINUX="192.168.1.100";  	END_ALIAS_LINUX="192.168.1.250"
+START_ALIAS_LINUX="${SPLUNKNBOX_START_IP:-10.42.0.100}";  	END_ALIAS_LINUX="${SPLUNKNBOX_END_IP:-10.42.0.250}"
 
 #OSX space will not be routed, and host reached from the laptop only
 START_ALIAS_OSX="10.0.0.100";  		END_ALIAS_OSX="10.0.0.250"
-#START_ALIAS_OSX=10.2.237.1"";  		END_ALIAS_OSX="10.2.237.49"
 
-DNSSERVER="192.168.1.19"		#if running dnsmasq. Set to docker-host machine IP
+DNSSERVER="${SPLUNKNBOX_DNS:-}"		#optional DNS server for containers (empty = Docker default)
 #---------------------------------
 #----------PATHS-------------------
 #Full PATH is dynamic based on OS type, see detect_os()
@@ -75,10 +87,37 @@ DNSSERVER="192.168.1.19"		#if running dnsmasq. Set to docker-host machine IP
 #GREP=
 #-----------------------------------
 #----------Images--------------------
-#My builds posted on docker hub    -MyH
-DEFAULT_SPLUNK_IMAGE="splunknbox/splunk_7.2.0"
+#Official Splunk image. Pick any published tag: latest, 10.0, 9.4, 9.4.3 ...
+SPLUNK_IMAGE_REPO="splunk/splunk"
+SPLUNK_VERSION="${SPLUNK_VERSION:-latest}"
+DEFAULT_SPLUNK_IMAGE="$SPLUNK_IMAGE_REPO:$SPLUNK_VERSION"
 
-#DEFAULT_SPLUNK_IMAGE="splunk/splunk"		#official image
+#Docker 29+ changed the default "docker images" table (IMAGE/ID/DISK USAGE...). This script parses
+#the classic REPOSITORY/TAG/IMAGE ID/CREATED/SIZE columns, so request that layout explicitly.
+docker() {
+	if [ "$1" == "images" ] && [[ " $* " != *" --format"* ]] && [[ " $* " != *" -q"* ]]; then
+		shift
+		command docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}' "$@"
+	else
+		command docker "$@"
+	fi
+}
+
+#Repo used by the "newer version available" check (your modernized copy, not the 2020 original)
+UPGRADE_REPO="${SPLUNKNBOX_UPGRADE_REPO:-gmalik1342/splunk-n-box}"
+
+#Splunk 10.x will not start unless the Splunk General Terms are accepted.
+#Leave empty to be asked once at startup, or set SPLUNK_ACCEPT_GENERAL_TERMS=yes
+SPLUNK_ACCEPT_GENERAL_TERMS="${SPLUNK_ACCEPT_GENERAL_TERMS:-}"
+SPLUNK_GENERAL_TERMS_FLAG="--accept-sgt-current-at-splunk-com"
+
+#Custom login screen (hostname/IP/password banner). Needs one extra splunkd restart per container.
+CUSTOM_LOGIN_SCREEN="${SPLUNKNBOX_LOGIN_SCREEN:-no}"
+SPLUNK_READY_TIMEOUT="${SPLUNKNBOX_READY_TIMEOUT:-600}"	#seconds to wait for a container to become healthy
+
+#The DEMO/WORKSHOP images came from Splunk's internal registry (not publicly reachable).
+#Kept for reference only; the demo menus are disabled unless this is set to "yes".
+ENABLE_INTERNAL_DEMOS="${SPLUNKNBOX_INTERNAL_DEMOS:-no}"
 SPLUNK_DOCKER_HUB="registry.splunk.com"	#internal to splunk.Requires login
 
 #Available splunk demos registry.splunk.com
@@ -121,7 +160,7 @@ HEC_PORT="8088"
 APP_SERVER_PORT="8065"				#new to 6.5
 APP_KEY_VALUE_PORT="8191"			#new to 6.5
 USERADMIN="admin"
-USERPASS="hello1234"
+USERPASS="${SPLUNKNBOX_PASSWORD:-hello1234}"	#min 8 chars (Splunk password policy)
 #----------------------------------------------------
 
 #----------Cluster stuff----------------
@@ -135,7 +174,7 @@ DEFAULT_SITE_LABEL="buttercup"
 DEF_SINGLE_SITE="DC01"  					#used in single-site build
 DEF_MULTI_SITES="LON HKG"  		#used in multi-site build
 
-MYSECRET="mysecret"					#defualt Pass4SymmKey
+MYSECRET="${SPLUNKNBOX_SECRET:-splunknbox-cluster-key}"	#default pass4SymmKey (cluster security key)
 STD_IDXC_COUNT="3"					#default IDXC count
 STD_SHC_COUNT="3"					#default SHC count
 DEP_SHC_COUNT="1"					#default DEP count
@@ -172,7 +211,7 @@ FLIPFLOP=0							#used to toggle color value in logline().Needs to be global
 #Used in startup_checks() routine to detect local instance and kill it.
 LOCAL_SPLUNKD="/opt/splunk/bin/splunk"  #don't run local splunkd instance on docker-host
 LOW_MEM_THRESHOLD=6.0				#threshold of recommended free system memory in GB
-DOCKER_MIN_VER=1.13.1				#min recommended docker version
+DOCKER_MIN_VER=20.10				#min recommended docker version
 MACSPEAK_VOL="7"					#default volume for MacOS speak feature
 #--------------------------------------------------------------------
 #--Progress status. tput (R,0) locations ---------
@@ -505,16 +544,16 @@ return 0
 }	#end start_docker_mac()
 #---------------------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------
-start_docker_liunx() {
+start_docker_linux() {
 _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
 
-read -p "    >> Should I attempt to start [may not work with all MacOS versions]? [Y/n]? " answer
+read -p "    >> Should I attempt to start the docker service [sudo systemctl start docker]? [Y/n]? " answer
 if [ -z "$answer" ] || [ "$answer" == "Y" ] || [ "$answer" == "y" ]; then
-        start docker ; pausing 30
+        sudo systemctl start docker ; pausing 10
         is_running=`docker info|$GREP Images`
         if [ -z "$is_running" ]; then
-                printf "${Red}Did not work! Please start docker from the UI... Exiting!${NC}\n\n"
-		printf "    ${Red}>>${NC} installation: https://docs.docker.com/engine/installation/ ${NC}\n"
+                printf "${Red}Did not work! Is your user in the 'docker' group? (sudo usermod -aG docker \$USER, then log out/in) Exiting!${NC}\n\n"
+		printf "    ${Red}>>${NC} installation: https://docs.docker.com/engine/install/ ${NC}\n"
                 exit
         fi
 else
@@ -545,6 +584,78 @@ if test -z "$BASH" ; then
 fi
 return 0
 }	#end check_shell()
+#---------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
+accept_general_terms() {
+_debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
+#Splunk 10.x containers refuse to start unless SPLUNK_GENERAL_TERMS is set. Never accept on the user's behalf.
+local answer
+if [ "$SPLUNK_ACCEPT_GENERAL_TERMS" == "yes" ]; then
+	return 0
+fi
+printf "${Blue}   ${ARROW_EMOJI}${ARROW_EMOJI}${NC} Splunk 10.x requires accepting the Splunk General Terms:\n"
+printf "\t${YELLOW_LEFTHAND_EMOJI}${NC} https://www.splunk.com/en_us/legal/splunk-general-terms.html\n"
+read -p "    >> Have you read and do you accept the Splunk General Terms? [y/N]? " answer
+if [ "$answer" == "y" ] || [ "$answer" == "Y" ]; then
+	SPLUNK_ACCEPT_GENERAL_TERMS="yes"
+	printf "\t${BULB_EMOJI}${NC} Tip: export SPLUNK_ACCEPT_GENERAL_TERMS=yes to skip this question next time\n"
+else
+	printf "${Red}Splunk containers cannot start without accepting the General Terms. Exiting...${NC}\n"
+	exit 1
+fi
+return 0
+}	#end accept_general_terms()
+#---------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
+get_bind_ip() {
+#Prints the host (alias) IP a container's splunkweb port is bound to, e.g. 10.42.0.101
+#Replaces the old "docker inspect {{ .HostConfig }} | grep" parsing that breaks on newer docker output
+#Reads the stored port bindings, so it also works for stopped containers (docker port does not).
+docker inspect --format '{{json .HostConfig.PortBindings}}' "$1" 2>/dev/null \
+	| $GREP -oE "\"$SPLUNKWEB_PORT/tcp\":\[\{\"HostIp\":\"[0-9.]+\"" | $GREP -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}	#end get_bind_ip()
+#---------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
+image_is_cached() {
+#Returns 0 if image (repo:tag) exists locally
+docker image inspect "$1" > /dev/null 2>&1
+}	#end image_is_cached()
+#---------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
+has_license_files() {
+#Returns 0 if at least one real license (*.lic containing <license> XML) exists. None = Enterprise trial mode.
+#(The repo ships a 2-byte placeholder "your_license_xml_file.lic" that must not count.)
+$GREP -qls "<license" $SPLUNK_LIC_DIR/*.lic 2>/dev/null
+}	#end has_license_files()
+#---------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
+wait_for_splunk_ready() {
+_debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
+#The official image provisions Splunk with ansible on first start (1-5 mins). Its HEALTHCHECK
+#reports "healthy" only once splunkd is up and configured, so poll that instead of a fixed sleep.
+local name="$1" timeout="${2:-$SPLUNK_READY_TIMEOUT}" waited=0 health=""
+while [ "$waited" -lt "$timeout" ]; do
+	health=`docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name" 2>/dev/null`
+	state=`docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null`
+	if [ "$health" == "healthy" ]; then
+		echo -ne " ${LightBlue}${ARROW_EMOJI}${NC}Waiting for splunkd to be ready...${Green}${OK_MARK_EMOJI} OK${NC} [${waited}s]          \n" >&3
+		return 0
+	fi
+	if [ "$health" == "none" ] && docker exec "$name" sh -c "ps xa | grep -q '[s]plunkd -p'" 2>/dev/null; then
+		echo -ne " ${LightBlue}${ARROW_EMOJI}${NC}Waiting for splunkd to be ready...${Green}${OK_MARK_EMOJI} OK${NC} [${waited}s]          \n" >&3
+		return 0	#image without healthcheck
+	fi
+	if [ "$state" == "exited" ] || [ "$state" == "dead" ]; then
+		echo -ne "\n ${Red}Container [$name] stopped during startup. Last log lines:${NC}\n" >&3
+		docker logs --tail 15 "$name" >&3 2>&1
+		return 1
+	fi
+	echo -ne " ${LightBlue}${ARROW_EMOJI}${NC}Waiting for splunkd to be ready...[${Yellow}${health}${NC}] ${waited}s\r" >&3
+	sleep 5; waited=$((waited + 5))
+done
+echo -ne "\n ${Red}Timed out after ${timeout}s waiting for [$name]. Check: docker logs $name${NC}\n" >&3
+return 1
+}	#end wait_for_splunk_ready()
 #---------------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------
 remove_ip_aliases() {
@@ -577,16 +688,23 @@ if [ "$answer" == "y" ] || [ "$answer" == "Y" ]; then
 			echo
 			printf "\n${LightRed}You must restart the script to regain functionality!${NC}\n"
 	elif  [ "$os" == "Linux" ]; then
-			read -p "Enter interface where IP aliases are binded to (default $ETH):  " eth; if [ -z "$eth" ]; then eth="$ETH_LINUX"
-                	sudo ifconfig $eth:$docker_mc_start_octet4 $base_ip.$docker_mc_start_octet4 down;  #special aliases
- 			for  ((i=$start_octet4; i<=$end_octet4 ; i++))  do
-                		echo -ne "${NC}Removing: >>  $eth:${Purple}$base_ip.${Yellow}$i\r"
-                		sudo ifconfig $eth:$i "$base_ip.$i" down;
-        		done
-			echo
-			printf "\n${LightRed}You must restart the script to regain functionality!${NC}\n"
+		#find the interface that actually holds the aliases (may be lo if the dummy fallback was used)
+		alias_dev=`ip -o addr show 2>/dev/null | $GREP -F " $END_ALIAS/" | awk '{print $2}' | head -1`
+		if [ -z "$alias_dev" ]; then alias_dev="$ETH_LINUX"; fi
+		read -p "Enter interface where IP aliases are binded to (default $alias_dev):  " eth; if [ -z "$eth" ]; then eth="$alias_dev"; fi
+		if [ "$(cat /sys/class/net/$eth/type 2>/dev/null)" != "" ] && ip -d link show "$eth" 2>/dev/null | $GREP -q " dummy "; then
+			#our private dummy interface: deleting it removes every alias in one go
+			sudo ip link del "$eth" && printf "Removed dummy interface [$eth] and all its aliases\n"
+		else
+			sudo ip addr del "$base_ip.$docker_mc_start_octet4/32" dev "$eth" 2>/dev/null	#special alias
+			for  ((i=$start_octet4; i<=$end_octet4 ; i++))  do
+				echo -ne "${NC}Removing: >>  $eth:${Purple}$base_ip.${Yellow}$i\r"
+				sudo ip addr del "$base_ip.$i/32" dev "$eth" 2>/dev/null
+			done
+		fi
+		echo
+		printf "\n${LightRed}You must restart the script to regain functionality!${NC}\n"
 	fi  #elif
-	fi
 	#---------
 
 else
@@ -609,7 +727,11 @@ end_octet4=`echo $END_ALIAS | cut -d"." -f4 `
 docker_mc_start_octet4=`expr $start_octet4 - 1`
 
 printf "${Blue}   ${ARROW_EMOJI}${ARROW_EMOJI}${NC} Checking if last IP alias is configured on any NIC [${Yellow}$END_ALIAS${NC}]..."
-last_alias=`ifconfig | $GREP $END_ALIAS `
+if [ "$os" == "Linux" ]; then
+	last_alias=`ip -o addr show 2>/dev/null | $GREP -F " $END_ALIAS/"`
+else
+	last_alias=`ifconfig | $GREP -F " $END_ALIAS "`
+fi
 if [ -n "$last_alias" ]; then
 	printf "${Green}${OK_MARK_EMOJI} OK\n"
 else
@@ -633,13 +755,26 @@ if [ "$os" == "Darwin" ] && [ -z "$last_alias" ]; then
 	done
 elif [ "$os" == "Linux" ] && [ -z "$last_alias" ]; then
 	read -p "Enter interface to bind aliases to (default $ETH):  " eth; if [ -z "$eth" ]; then eth="$ETH_LINUX"; fi
-	printf "Building IP aliases for LINUX...[$base_ip.$start_octet4-$end_octet4]\n"
+	if ! ip link show "$eth" > /dev/null 2>&1; then
+		printf "Creating private dummy interface [${Yellow}$eth${NC}] (containers reachable from this machine only)...\n"
+		if ! sudo ip link add "$eth" type dummy 2>/dev/null; then
+			#no "dummy" kernel module (some VMs/containers): loopback works the same for local-only access
+			printf "${BrownOrange}${WARNING_EMOJI} Could not create dummy interface [$eth] (try: sudo modprobe dummy). Using loopback [lo] instead.${NC}\n"
+			eth="lo"
+		fi
+	fi
+	sudo ip link set "$eth" up
+	printf "Building IP aliases for LINUX...[$base_ip.$start_octet4-$end_octet4] on [$eth]\n"
 	printf "Building special IP aliases for $MASTER_CONTAINER (used for docker monitoring only)...[$base_ip.$docker_mc_start_octet4]\n"
-	sudo ifconfig $eth:$docker_mc_start_octet4 "$base_ip.$docker_mc_start_octet4" up   #special alias
+	sudo ip addr add "$base_ip.$docker_mc_start_octet4/32" dev "$eth" 2>/dev/null   #special alias
 	for  ((i=$start_octet4; i<=$end_octet4 ; i++))  do
         	echo -ne "${NC}Adding: >>  $eth:${Purple}$base_ip.${Yellow}$i\r"
-		sudo ifconfig $eth:$i "$base_ip.$i" up;
+		sudo ip addr add "$base_ip.$i/32" dev "$eth" 2>/dev/null
 	done
+	echo
+fi
+if [ -n "$last_alias" ]; then
+	return 0	#nothing to do, don't stop for <ENTER>
 fi
 #printf "${NC}\n"
 read -p $'\033[1;32mHit <ENTER> to continue...\e[0m'
@@ -700,6 +835,15 @@ check_for_ubuntu_pkgs() {
 _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
 
 #----------
+printf "${Yellow}   ${ARROW_EMOJI}${NC} Checking [iproute2] package (ip command):${NC} "
+if ! command -v ip > /dev/null 2>&1; then
+	printf "${BrownOrange}Installing [iproute2]${NC}:"
+	progress_bar_pkg_download "sudo apt-get install iproute2 -y"
+else
+	printf "${Green}${CHECK_MARK_EMOJI} Installed${NC}\n"
+fi
+
+#----------
 printf "${Yellow}   ${ARROW_EMOJI}${NC} Checking [bc] package:${NC} "
 condition=$(which bc 2>/dev/null | $GREP -v "not found" | wc -l)
 if [ $condition -eq 0 ]; then
@@ -715,7 +859,6 @@ condition=$(which wget 2>/dev/null | $GREP -v "not found" | wc -l)
 if [ $condition -eq 0 ]; then
 	printf "${BrownOrange}Installing [wget]${NC}:"
 	progress_bar_pkg_download "sudo apt-get install wget -y"
-	brew link --overwrite wget
 	#if brew link failed due to premission issue; run sudo chown -R `whoami` /usr/local
 else
 	printf "${Green}${CHECK_MARK_EMOJI} Installed${NC}\n"
@@ -738,7 +881,7 @@ printf "${Yellow}   ${ARROW_EMOJI}${NC} Checking optional [timeout] package:${NC
 condition=$(which timeout 2>/dev/null | $GREP -v "not found" | wc -l)
 if [ $condition -eq 0 ]; then
 	printf "${BrownOrange}Installing [timeout]${NC}:"
-	progress_bar_pkg_download "sudo apt-get install timeout -y"
+	progress_bar_pkg_download "sudo apt-get install coreutils -y"
 else
 	printf "${Green}${CHECK_MARK_EMOJI} Installed${NC}\n"
 	alias timeout="gtimeout"
@@ -1052,10 +1195,12 @@ else
 fi
 #-----------docker preferences check-------
 
+#-----------Splunk General Terms (required by 10.x images)---
+accept_general_terms
+
 #-----------splunk image check-------------
 printf "${Blue}   ${ARROW_EMOJI}${ARROW_EMOJI}${NC} Checking if Splunk image is available [${Yellow}$DEFAULT_SPLUNK_IMAGE${NC}]..."
-image_ok=`docker images|$GREP "$DEFAULT_SPLUNK_IMAGE"`
-if [ -z "$image_ok" ]; then
+if ! image_is_cached "$DEFAULT_SPLUNK_IMAGE"; then
 	printf "${Red}NOT FOUND!${NC}\n"
 	read -p "    >> Download default splunk image [$DEFAULT_SPLUNK_IMAGE] [Y/n]? " answer
         if [ -z "$answer" ] || [ "$answer" == "Y" ] || [ "$answer" == "y" ]; then
@@ -1064,7 +1209,7 @@ if [ -z "$image_ok" ]; then
                 printf "\n${NC}"
         else
 			printf "    ${Red}>> ${WARNING_EMOJI}WARNNING! Many functions will fail without ($DEFAULT_SPLUNK_IMAGE). It is critical to download this splunk image....${NC}\n"
-                printf "    See https://hub.docker.com/search/?isAutomated=0&isOfficial=0&page=1&pullCount=0&q=splunknbox&starCount=0\n"
+                printf "    See https://hub.docker.com/r/splunk/splunk/tags\n"
 		read -p $'\033[1;32mHit <ENTER> to continue...\e[0m'
         fi
 else
@@ -1077,7 +1222,7 @@ printf "${Blue}   ${ARROW_EMOJI}${ARROW_EMOJI}${NC} Checking if docker network i
 net=`docker network ls | $GREP $SPLUNKNET `
 if [ -z "$net" ]; then
 	printf "${Green} Creating...${NC}\n"
-        docker network create -o --iptables=true -o --ip-masq -o --ip-forward=true $SPLUNKNET
+        docker network create $SPLUNKNET
 else
        printf "${Green}${OK_MARK_EMOJI} OK${NC}\n"
 fi
@@ -1089,11 +1234,11 @@ if [ ! -d $SPLUNK_LIC_DIR ]; then
     	printf "${Red} DIR DOESN'T EXIST!${NC}\n"
 		printf "\t${YELLOW_LEFTHAND_EMOJI}${NC} Please create $SPLUNK_LIC_DIR and place all *.lic files there.\n"
 		printf "\t${YELLOW_LEFTHAND_EMOJI}${NC} Change the location of LICENSE dir in the config section of the script.${NC}\n\n"
-elif  ls $SPLUNK_LIC_DIR/*.lic 1> /dev/null 2>&1 ; then
+elif  has_license_files ; then
        	printf "${Green}${OK_MARK_EMOJI} OK${NC}\n"
 	else
-        printf "${Red}NO LIC FILE(S) FOUND!${NC}\n"
-		printf "\t${YELLOW_LEFTHAND_EMOJI}${NC} If *.lic exist, make sure they are readable.${NC}\n\n"
+        printf "${BrownOrange}NONE (using 60-day Enterprise trial)${NC}\n"
+		printf "\t${BULB_EMOJI}${NC} Drop *.lic files (e.g. a Splunk Developer license) in $SPLUNK_LIC_DIR to use them instead.${NC}\n\n"
 fi
 #-----------license files/dir check--------
 
@@ -1176,7 +1321,7 @@ elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
 	ETH=$ETH_LINUX
 	MOUNTPOINT="/home/${USER}/$VOL_DIR"
 	PROJ_DIR="/home/${USER}/"
-	release=`lsb_release -r |awk '{print $2}'`
+	release=`. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"`
 	kern_ver=`uname -r`
 	os_banner="Detected LINUX [Release:$release Kernel:${Yellow}$kern_ver${NC}]"
 
@@ -1189,8 +1334,6 @@ if [ -f /sys/hypervisor/uuid ] && [ `head -c 3 /sys/hypervisor/uuid` == ec2 ]; t
 	bios_ver=`sudo dmidecode -s bios-version`
 	os_banner="Detected AWS EC2 instance [BIOS:${Yellow}$bios_ver${NC}]"
     AWS_EC2="YES"
-	START_ALIAS=$START_ALIAS_OSX
-	END_ALIAS=$END_ALIAS_OSX
 else
     AWS_EC2="NO"
 fi
@@ -1207,9 +1350,9 @@ _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]
 
 #Lines below  must be broked with "\" .Otherwise git clean/smudge scripts will
 #screw up things if the $ sign is not the last char
-GIT_VER=`echo "__VERSION: 5.1-19 $" | \
+GIT_VER=`echo "__VERSION: 6.0-1 $" | \
 		$GREP -Po "\d+.\d+-\d+"`
-GIT_DATE=`echo "__DATE: Thu May 31,2018 - 06:18:11PM -0600 $" | \
+GIT_DATE=`echo "__DATE: Thu Nov 19,2026 - 10:30:00PM -0500 $" | \
 		$GREP -Po "\w+\s\w+\s\d{2},\d{4}\s-\s\d{2}:\d{2}:\d{2}(AM|PM)\s-\d{4}" `
 GIT_AUTHOR=`echo "__AUTHOR: mhassan2 <mhassan@splunk.com> $" | \
 		$GREP -Po "\w+\s\<\w+\@\w+.\w+\>"`
@@ -1352,47 +1495,10 @@ return 0
 #---------------------------------------------------------------------------------
 is_splunkd_running() {
 _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
-
+#Kept for compatibility with existing callers. Uses the container healthcheck (see wait_for_splunk_ready)
 clear_from_if_screen_ended "$R_ROLL"
-fullhostname="$1"
-check_load
-
-#-----check if splunkd is running--------
-if ( compare "$host_name" "DEMO" ) || ( compare "$host_name" "WORKSHOP" ); then
-	pausing 30;
-fi #demo/workshop containers takes little longer to start
-
-#splunkstate=`docker exec -ti $fullhostname /opt/splunk/bin/splunk status| $GREP -i "not running" `
-splunkstate=`docker exec -ti $fullhostname sh -c "ps xa|$GREP '[s]plunkd -p'" `
-#echo "splunkstate[$splunkstate]"
-echo -ne " ${LightBlue}${ARROW_EMOJI}${NC}Verifying splunkd is running...\r" >&3
-if [ -n "$splunkstate" ]; then
-        echo -ne  " ${LightBlue}${ARROW_EMOJI}${NC}Verifying splunkd is running...${Green}${OK_MARK_EMOJI} OK${NC}                           \n" >&3
-else
-        	echo -ne "${NC}	${LightBlue}${ARROW_EMOJI}${NC}Verifying splunkd is running..${Red}Not running! Attempt ${Yellow}$i${Red} to restart\r${NC}" >&3
-        	sleep 30        #pause between attempts to restart
-        	CMD="docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk start "
-        	#echo "cmd[$CMD]"
-        	OUT=`$CMD`; display_output "$OUT" "Splunk web interface is at" "4"
-        	printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
-        	#logline "$CMD" "$fullhostname"
-        	#pausing "30"
-			splunkstate=`docker exec -ti $fullhostname sh -c "ps xa|$GREP '[s]plunkd -p'" `
-			if [ -z "$splunkstat" ]; then
-        		echo -ne  " ${LightBlue}${ARROW_EMOJI}${NC}Verifying splunkd is running...${Green}${OK_MARK_EMOJI} OK${NC}                           \n" >&3
-				return
-
-			fi
-fi
-
-#if [ -z "$splunkstate" ]; then
-# printf "${Green}${OK_MARK_EMOJI} OK${NC}\n" >&3
- #       echo -ne  "	${Yellow}${ARROW_EMOJI}${NC}Verifying splunkd is running...${Green}${OK_MARK_EMOJI} OK${NC}                           \n" >&3
-#else
- #       echo -ne  "	${Yellow}${ARROW_EMOJI}${NC}Verifying splunkd is running...${Red}NOT${OK_MARK_EMOJI} OK${NC}                          \n" >&3
-#fi
-
-return 0
+wait_for_splunk_ready "$1" 300
+return $?
 }	#end is_splunkd_running()
 #---------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------
@@ -1420,8 +1526,18 @@ _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]
 #see: https://docs.docker.com/engine/reference/commandline/cp/
 
 clear_from_if_screen_ended "$R_ROLL"
+if ! has_license_files; then
+	printf " ${LightBlue}${ARROW_EMOJI}${NC}No *.lic files found. Using built-in 60-day Enterprise trial...${Green}${OK_MARK_EMOJI} OK${NC}\n" >&3
+	return 0
+fi
 check_load
-CMD="docker cp $SPLUNK_LIC_DIR  $1:/opt/splunk/etc/licenses/enterprise"; OUT=`$CMD`
+#copy each real license file (a plain "docker cp dir dest" nests the dir one level too deep)
+docker exec -u splunk $1 mkdir -p /opt/splunk/etc/licenses/enterprise > /dev/null 2>&1
+OUT=""
+for lic in `$GREP -ls "<license" $SPLUNK_LIC_DIR/*.lic`; do
+	CMD="docker cp $lic $1:/opt/splunk/etc/licenses/enterprise/"; OUT="$OUT`$CMD`"
+done
+docker exec -u root $1 chown -R splunk:splunk /opt/splunk/etc/licenses/enterprise > /dev/null 2>&1
 printf " ${LightBlue}${ARROW_EMOJI}${NC}Copying license file(s)..." >&3 ; display_output "$OUT" "" "3"
 printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 logline "$CMD" "$1"
@@ -1437,24 +1553,14 @@ return 0
 #-----------------------------------------------------------------------------
 reset_splunk_passwd() {
 _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]}"
-fullhostname="$1"
+#Set admin password back to $USERPASS. $2 = current password (defaults to $USERPASS)
+fullhostname="$1"; current_pass="${2:-$USERPASS}"
 
-docker exec -u splunk -ti $fullhostname touch /opt/splunk/etc/.ui_login	#prevent first time changeme password screen
-docker exec -u splunk -ti $fullhostname rm -fr /opt/splunk/etc/passwd	#remove any existing users (include admin)
-
-#reset password to "$USERADMIN:$USERPASS"
-CMD="docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk edit user admin -password $USERPASS -roles admin -auth admin:changeme"
-printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4 ; OUT=`$CMD`
+CMD="docker exec -u splunk $fullhostname /opt/splunk/bin/splunk edit user $USERADMIN -password $USERPASS -auth $USERADMIN:$current_pass"
+OUT=`$CMD 2>&1`
+printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 logline "$CMD" "$fullhostname"
-printf "${Purple}$fullhostname${NC}: > $CMD\n"  >&4
-
-if ( compare "$CMD" "failed" ); then
-   echo " ${LightBlue}${ARROW_EMOJI}${NC}Trying default password "
-   CMD="docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk edit user admin -password changeme -roles admin -auth $USERADMIN:$USERPASS"
-   printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4 ; OUT=`$CMD`
-   logline "$CMD" "$fullhostname"
-   printf "${Purple}$fullhostname${NC}: $OUT\n"  >&4
-fi
+display_output "$OUT" "user admin edited" "3"
 return 0
 }	#end reset_splunk_passwd()
 #---------------------------------------------------------------------------------
@@ -1466,12 +1572,13 @@ screen_header "${HEADER_COLOR}" "Splunk N' A Box v$GIT_VER: ${Yellow}MAIN MENU -
 printf "\n"
 display_all_containers
 
+read -s -p "Enter the CURRENT admin password on the containers (ENTER = $USERPASS): " current_pass; echo
 for host_name in `docker ps --format "{{.Names}}"`; do
         if ( compare "$host_name" "DEMO" ) || ( compare "$host_name" "WORKSHOP" ) || ( compare "$host_name" "3RDP" ) ; then
                 true
         else
                 printf "${Purple}$host_name${NC}: Admin password reset to [$USERPASS]\n"
-                reset_splunk_passwd $host_name
+                reset_splunk_passwd $host_name "$current_pass"
         fi
 		clear_from_if_screen_ended "$R_ROLL"
 done
@@ -1555,13 +1662,17 @@ _debug_function_inputs  "${FUNCNAME}" "$#" "[$1][$2][$3][$4][$5]" "${FUNCNAME[*]
 clear_from_if_screen_ended "$R_ROLL"
 check_load
 lm="$1"; hostname="$2";
+if [ -n "$lm" ] && ! has_license_files; then
+	#Trial licenses cannot act as a license manager for other instances; each node keeps its own trial
+	printf " ${LightBlue}${ARROW_EMOJI}${NC}Trial mode: [$hostname] keeps its own trial license (LM:[$lm] not used)\n" >&3
+	return 0
+fi
 if [ -n "$lm" ]; then
-	#echo "hostname[$hostname]  lm[$lm] _____________";exit
-	lm_ip=`docker port  $lm| awk '{print $3}'| cut -d":" -f1|head -1`
+	lm_ip=`get_bind_ip $lm`
   	if [ -n "$lm_ip" ]; then
-        	CMD="docker exec -u splunk -ti $hostname /opt/splunk/bin/splunk edit licenser-localslave -master_uri https://$lm_ip:$MGMT_PORT -auth $USERADMIN:$USERPASS"
+        	CMD="docker exec -u splunk -ti $hostname /opt/splunk/bin/splunk edit licenser-localpeer -manager_uri https://$lm_ip:$MGMT_PORT -auth $USERADMIN:$USERPASS"
 		OUT=`$CMD`
-        	printf " ${LightBlue}${ARROW_EMOJI}${NC}Making [$hostname] license-slave using LM:[$lm] " >&3 ; display_output "$OUT" "has been edited" "3"
+        	printf " ${LightBlue}${ARROW_EMOJI}${NC}Making [$hostname] license-peer using LM:[$lm] " >&3 ; display_output "$OUT" "has been edited" "3"
 		printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 		logline "$CMD" "$hostname"
         	fi
@@ -1698,49 +1809,11 @@ vip="$1";  fullhostname="$2"
 check_load
 #set -x
 #----------- password stuff ----------
-if ( compare "$fullhostname" "DEMO-ES" ) || ( compare "$fullhostname" "DEMO-ITSI" ) || ( compare "$fullhostname" "DEMO-VMWARE" ) ; then
-	true #dont change pass for some demos.
-	USERPASS="changeme"
-        printf "${Green}OK${NC}\n"
-else
-	if [ "$splunkversion" -ge "710" ]; then
-	txt="\n #-----Modified by splunk-n-box ----\n [general]\n allowRemoteLogin=always \n"
-	printf "%b" "$txt" > $TMP_DIR/server.conf.tmp
-	CMD="docker cp $TMP_DIR/server.conf.tmp $fullhostname:/tmp/server.conf"; OUT=`$CMD`
-	CMD=`docker exec -u splunk -ti $fullhostname  bash -c "cat /tmp/server.conf >> /opt/splunk/etc/system/local/server.conf" `; OUT=`$CMD`
-
-	#printf " ${LightBlue}${ARROW_EMOJI}${NC}Setting allowRemoteLogin=always in server.conf..." >&3
-#	docker exec -i $fullhostname /bin/bash -c "sed -i 's/requireSetPassword/always/g' /opt/splunk/etc/system/default/server.conf"
-	#logline "$CMD" "$fullhostname"
-	fi
-
-	#reset password to "$USERADMIN:$USERPASS"
-	CMD="docker exec -u splunk -ti $fullhostname touch /opt/splunk/etc/.ui_login"      #prevent first time changeme password screen
-	OUT=`$CMD`;   #printf "${DarkGray}CMD:[$CMD]${NC}\n" >&5
-	logline "$CMD" "$fullhostname"
-	CMD="docker exec -u splunk -ti $fullhostname rm -fr /opt/splunk/etc/passwd"        #remove any existing users (include admin)
-	OUT=`$CMD`;   #printf "${DarkGray}CMD:[$CMD]${NC}\n" >&5
-	logline "$CMD" "$fullhostname"
-	CMD="docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk edit user admin -password $USERPASS -roles $USERADMIN -auth admin:changeme "
-	OUT=`$CMD`;   display_output "$OUT" "user admin edited" "3"
-	printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
-	logline "$CMD" "$fullhostname"
-
-	if ( compare "$CMD" "failed" ); then
-        	echo "Trying default password"
-   #     	docker exec -u splunk -ti $fullhostname rm -fr /opt/splunk/etc/passwd        #remove any existing users (include admin)
-        	CMD="docker exec -u splunk -ti $fullhostname touch /opt/splunk/etc/.ui_login"      #prevent first time changeme password screen
-		OUT=`$CMD` ; display_output "$OUT" "user admin edited" "5"
-		#printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
-		logline "$CMD" "$fullhostname"
-
-        	CMD="/opt/splunk/bin/splunk edit user $USERADMIN -password changeme -roles admin -auth $USERADMIN:$USERPASS"
-		OUT=`$CMD` ; #printf "${DarkGray}CMD:[$CMD]${NC}\n" >&5
-		logline "$CMD" "$fullhostname"
-		display_output "$OUT" "user admin edited" "5"
-		#printf "${DarkGray}CMD:[$CMD]${NC}\n" >&5
-		logline "$CMD" "$fullhostname"
-	fi
+#The official image already set the admin password from SPLUNK_PASSWORD (=$USERPASS) at first start.
+#The old "edit user admin -auth admin:changeme" reset is no longer needed (or possible).
+if [ "$CUSTOM_LOGIN_SCREEN" != "yes" ]; then
+	printf "${Green}${OK_MARK_EMOJI} OK${NC}\n" >&3
+	return 0
 fi
 #----------- password stuff ----------
 
@@ -1773,25 +1846,19 @@ LINE3="<H3 style=\"text-align: left;\"><font color=\"#867979\"> &nbsp; &nbsp; &n
 LINE4="<H3 style=\"text-align: left;\"><font color=\"#867979\"> &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; Cluster Label: </font><font color=\"#FF9033\"> $cluster_label</font></H3><BR/></CENTER>"
 
 LINE5="<H2><CENTER><font color=\"#867979\">User: </font> <font color=\"red\">$USERADMIN</font> &nbsp&nbsp<font color=\"#867979\">Password:</font> <font color=\"red\"> $SHOW_PASS</font></H2></font></CENTER><BR/>"
-LINE6="<CENTER><font color=\"#867979\">Created using Splunk N' A Box v$GIT_VER<BR/> Docker image [$SPLUNK_IMAGE]</font></CENTER>"
+LINE6="<CENTER><font color=\"#867979\">Created using Splunk N' A Box v$GIT_VER<BR/> Docker image [$DEFAULT_SPLUNK_IMAGE]</font></CENTER>"
 
 #configure the custom login screen and http access for ALL (no exception)
 custom_web_conf="[settings]\nlogin_content=<div align=\"right\" style=\"border:1px solid blue;\"> $LINE1 $LINE2 $LINE3 $LINE4 $LINE5 $LINE6 </div> <p>This data is auto-generated at container build time (container internal IP=$container_ip)</p>\n\nenableSplunkWebSSL=0\n"
 
-printf "$custom_web_conf" > $PROJ_DIR/web.conf
-CMD=`docker cp $PROJ_DIR/web.conf $fullhostname:/opt/splunk/etc/system/local/web.conf`
+printf "$custom_web_conf" > $TMP_DIR/web.conf
+docker cp $TMP_DIR/web.conf $fullhostname:/tmp/splunknbox_web.conf > /dev/null 2>&1
+docker exec -u splunk $fullhostname bash -c "cat /tmp/splunknbox_web.conf >> /opt/splunk/etc/system/local/web.conf" > /dev/null 2>&1
 #-------web.conf stuff-------
 
-#make web.conf changes take effect!
-if ( compare "$fullhostname" "DEMO-ES" ) || ( compare "$fullhostname" "DEMO-VMWARE" ) || ( compare "$fullhostname" "DEMO-PCI" ) ; then
-	#pausing "30"
-	restart_splunkd "$fullhostname"
-        #printf "${Green}OK${NC}\n"
-	#CMD=`docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk restart splunkweb -auth $USERADMIN:$USERPASS`
-else
-	#restarting splunkweb may not work with 6.5+
-	CMD=`docker exec -u splunk -ti $fullhostname /opt/splunk/bin/splunk restart splunkweb -auth $USERADMIN:$USERPASS`
-fi
+#make web.conf changes take effect! (splunkweb runs inside splunkd since 9.x, so a full restart is required)
+restart_splunkd "$fullhostname"
+wait_for_splunk_ready "$fullhostname" 300
 
 USERPASS="$USERPASS" #rest in case we just processed ES or VMWARE DEMOS
 #set +x
@@ -1849,7 +1916,7 @@ clear_from_if_screen_ended "$R_ROLL"
 
 #adding search peer in MC
 if [ -n "$mc" ]; then
-	bind_ip_host=`docker inspect --format '{{ .HostConfig }}' $host| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+	bind_ip_host=`get_bind_ip $host`
 	CMD="docker exec -u splunk -ti $mc /opt/splunk/bin/splunk add search-server -host $bind_ip_host:$MGMT_PORT -auth $USERADMIN:$USERPASS -remoteUsername $USERADMIN -remotePassword $USERPASS"
     OUT=`$CMD`
     OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `   # clean it up
@@ -1954,14 +2021,14 @@ if [ "$containers_count" == 0 ]; then       #nothing created yet!
 elif [ "$containers_count" -gt "0" ]; then
 	#last_ip_used=`docker inspect --format '{{ .HostConfig }}' $(docker ps -aql)|$GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
 	#last_ip_used=`docker inspect --format='{{(index (index .NetworkSettings.Ports "8000/tcp") 0).HostIp}}' $(docker ps -aq) 2>/dev/null | sort -u |tail -1`
-	last_ip_used=`docker inspect --format '{{ .HostConfig }}' $(docker ps -aq)| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+ 8000'|cut -d" " -f 1|sort -un|tail -1`
+	#highest alias IP (in our range) already bound by any container
+	last_ip_used=`for c in $(docker ps -aq); do get_bind_ip $c; done | $GREP "^$base_ip\." | sort -t. -k4,4n | tail -1`
 
 	if [ -n "$last_ip_used" ]; then
         	last_used_octet4=`echo $last_ip_used |cut -d"." -f4`
 	else
-		printf "${NC}\n"
-		printf "Use option ${Yellow}1)${NC} SHOW all containers... ${Red}above to see the offending container(s). Exiting...${NC}\n"
-	#	exit
+		#containers exist but none bound to our alias range (e.g. non splunk-n-box containers)
+		last_used_octet4=`echo $START_ALIAS | cut -d"." -f4 `
 	fi
         printf "${LightRed}DEBUG:=> ${Yellow}In $FUNCNAME(): ${Purple}SOME HOSTS EXIST. [containers_count:$containers_count][last ip used:$last_ip_used][last_octet4:$last_used_octet4]\n" >&6
 fi
@@ -2125,23 +2192,24 @@ else
 	full_image_name="$DEFAULT_SPLUNK_IMAGE"
 fi
 
-#Force changme passwd at startup with version 7.1+. (moved to entrypoint.sh)
-splunkversion=`echo "$DEFAULT_SPLUNK_IMAGE" | sed 's/[^0-9]*//g'`
-#if [ "$splunkversion" -ge "710" ]; then
-#	START_ARGS="--accept-license\x20--seed-passwd\x20changeme"
-#else
-#	START_ARGS="--accept-license"
-#fi
+#Official image: password is seeded by SPLUNK_PASSWORD, terms/license accepted via env.
+#NOTE: CMD is word-split when executed, so USERPASS must not contain spaces.
+splunkversion="$SPLUNK_VERSION"
+dns_opt=""
+if [ -n "$DNSSERVER" ]; then dns_opt="--dns=$DNSSERVER"; fi
 
 CMD="docker run -d \
---network=$SPLUNKNET --hostname=$fullhostname --name=$fullhostname --dns=$DNSSERVER \
--p $vip:$SPLUNKWEB_PORT:$SPLUNKWEB_PORT_EXT -p $vip:$MGMT_PORT:$MGMT_PORT -p $vip:$SSHD_PORT:$SSHD_PORT \
+--network=$SPLUNKNET --hostname=$fullhostname --name=$fullhostname $dns_opt \
+--ulimit nofile=65536:65536 --stop-timeout 120 \
+-p $vip:$SPLUNKWEB_PORT:$SPLUNKWEB_PORT_EXT -p $vip:$MGMT_PORT:$MGMT_PORT \
 -p $vip:$HEC_PORT:$HEC_PORT \
--p $vip:$RECV_PORT:$RECV_PORT -p $vip:$REPL_PORT:$REPL_PORT -p $vip:$APP_SERVER_PORT:$APP_SERVER_PORT \
+-p $vip:$RECV_PORT:$RECV_PORT -p $vip:$REPL_PORT:$REPL_PORT \
 -p $vip:$APP_KEY_VALUE_PORT:$APP_KEY_VALUE_PORT \
 -e SPLUNK_START_ARGS=--accept-license \
--e SPLUNK_ENABLE_LISTEN=$RECV_PORT -e SPLUNK_SERVER_NAME=$fullhostname \
--e SPLUNK_SERVER_IP=$vip -e SPLUNK_USER=splunk  $full_image_name"
+-e SPLUNK_GENERAL_TERMS=$SPLUNK_GENERAL_TERMS_FLAG \
+-e SPLUNK_PASSWORD=$USERPASS \
+-e SPLUNK_ENABLE_LISTEN=$RECV_PORT \
+-e SPLUNK_SERVER_NAME=$fullhostname $full_image_name"
 
 #-v $MOUNTPOINT/$fullhostname/etc:/opt/splunk/etc -v  $MOUNTPOINT/$fullhostname/var:/opt/splunk/var \
 
@@ -2160,12 +2228,6 @@ printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 clear_from_if_screen_ended "$R_ROLL"		#clearing anything below
 logline "$CMD" "$fullhostname"
 
-if [ "$os" == "Darwin" ]; then
-	pausing "30"
-else
-	pausing "15"
-fi
-
 #-----check if container is running--------
 printf " ${LightBlue}${ARROW_EMOJI}${NC}Verifying container is running..." >&3
 if ! ( is_container_running "$fullhostname" ); then
@@ -2174,8 +2236,11 @@ else
 	printf "${Green}${OK_MARK_EMOJI} OK${NC}\n" >&3
 fi
 
-#-----check if splunkd is running--------
-is_splunkd_running "$fullhostname"
+#-----wait until splunkd is provisioned and healthy (official image takes 1-5 mins)--------
+if ! wait_for_splunk_ready "$fullhostname"; then
+	printf "${Red}[$fullhostname] did not become ready. Skipping remaining setup for this host.${NC}\n"
+	return 1
+fi
 
 #custom_login_screen() will not change pass for DEMO-ES* or DEMO-VMWARE*. Set allowRemoteLogin for 7.1+
 printf " ${LightBlue}${ARROW_EMOJI}${NC}Splunk initialization..." >&3
@@ -2854,7 +2919,7 @@ tput sgr0
 tput cup 7 15; printf "${LightCyan}1${NC}) ${LightCyan}Manage All Containers & Images ${NC}\n"
 tput cup 8 15; printf "${LightCyan}2${NC}) ${LightCyan}Manage Lunch & Learn Containers ${NC}\n"
 tput cup 9 15; printf "${LightCyan}3${NC}) ${LightCyan}Manage Splunk Clusters${NC}\n"
-tput cup 10 15; printf "${LightCyan}4${NC}) ${LightCyan}Manage Splunk Demos ${DarkGray}[**internal use only**]${NC}\n"
+tput cup 10 15; printf "${DarkGray}4) Manage Splunk Demos [disabled: Splunk-internal registry]${NC}\n"
 tput cup 11 15; printf "${LightCyan}5${NC}) ${LightCyan}Manage 3Rd Party Containers & Images ${DarkGray}[**under construction**]${NC}\n"
 tput cup 12 15; printf "${LightCyan}6${NC}) ${LightCyan}Manage System ${NC}\n"
 tput cup 13 15; printf "${LightCyan}7${NC}) ${LightCyan}Change Log Level ${NC}\n"
@@ -3046,7 +3111,9 @@ do
         	1 ) splunk_menu_inputs ;;
         	2 ) lunch_learn_menu_inputs ;;
 			3 ) clustering_menu_inputs ;;
-        	4 ) demos_menu_inputs ;;
+        	4 ) if [ "$ENABLE_INTERNAL_DEMOS" == "yes" ]; then demos_menu_inputs;
+			    else printf "\n${BrownOrange}Demo images lived in Splunk's internal registry and are not publicly available.${NC}\n"
+				 read -p $'\033[1;32mHit <ENTER> to continue...\e[0m'; fi ;;
         	5 ) 3rdparty_menu_inputs ;;
         	6 ) system_menu_inputs ;;
         	7 ) change_loglevel ;;
@@ -3667,7 +3734,7 @@ for sh in $members_list ; do
 
 	#-------member config---
  	printf "[${Purple}$sh${NC}]${LightBlue} Making cluster member...${NC}\n"
-    bind_ip_sh=`docker inspect --format '{{ .HostConfig }}' $sh| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+    bind_ip_sh=`get_bind_ip $sh`
 	CMD="docker exec -u splunk -ti $sh /opt/splunk/bin/splunk init shcluster-config -auth $USERADMIN:$USERPASS -mgmt_uri https://$bind_ip_sh:$MGMT_PORT -replication_port $REPL_PORT -replication_factor $R_FACTOR -register_replication_address $bind_ip_sh -conf_deploy_fetch_url https://$bind_ip_dep:$MGMT_PORT -secret $MYSECRET -shcluster_label $label"
 	OUT=`$CMD`
 	OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `   # clean it up
@@ -3679,8 +3746,8 @@ for sh in $members_list ; do
 	#-------auto discovery---
 	if [ -n "$cm" ]; then
 		#another method of getting bind IP (showing published ports:IPs).Container must be RUNNING!
-		cm_ip=`docker port  $cm| awk '{print $3}'| cut -d":" -f1|head -1`
-    	CMD="docker exec -u splunk  -ti $sh /opt/splunk/bin/splunk edit cluster-config -mode searchhead -master_uri https://$cm_ip:$MGMT_PORT -secret $MYSECRET -auth $USERADMIN:$USERPASS"
+		cm_ip=`get_bind_ip $cm`
+    	CMD="docker exec -u splunk  -ti $sh /opt/splunk/bin/splunk edit cluster-config -mode searchhead -manager_uri https://$cm_ip:$MGMT_PORT -secret $MYSECRET -auth $USERADMIN:$USERPASS"
 		OUT=`$CMD`
 		printf "${Yellow}${ARROW_EMOJI}${NC}Integrating with Cluster Master [$cm] for idx auto discovery " >&3 ; display_output "$OUT" "property has been edited" "3"
 		printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
@@ -3717,8 +3784,8 @@ local start_time=$(date +%s);
 
 printf "[${Purple}$sh${NC}]${Cyan} Configure Search Head for multi-site ${NC}\n"
 
-bind_ip_sh=`docker inspect --format '{{ .HostConfig }}' $sh| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
-bind_ip_cm=`docker inspect --format '{{ .HostConfig }}' $m_cm| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+bind_ip_sh=`get_bind_ip $sh`
+bind_ip_cm=`get_bind_ip $m_cm`
 
 #-------member config---
 CMD="docker exec -u splunk -ti $sh /opt/splunk/bin/splunk init shcluster-config  -mgmt_uri https://$bind_ip_sh:$MGMT_PORT -replication_port $REPL_PORT -replication_factor $R_FACTOR -register_replication_address $bind_ip_sh -conf_deploy_fetch_url https://$bind_ip_dep:$MGMT_PORT -secret $MYSECRET -shcluster_label $label -auth $USERADMIN:$USERPASS"
@@ -3746,7 +3813,7 @@ printf "${Yellow}${ARROW_EMOJI}${NC}Initializing shcluster-config " >&3 ;display
 
 #-------auto discovery---
 #CMD="docker exec -u splunk -ti $sh /opt/splunk/bin/splunk edit cluster-config -mode searchhead -site $site -secret $MYSECRET -register_replication_address $bind_ip_sh -master_uri https://$bind_ip_cm:$MGMT_PORT -auth $USERADMIN:$USERPASS"
-CMD="docker exec -u splunk -ti $sh /opt/splunk/bin/splunk edit cluster-config -mode searchhead -site $s_affinity -secret $MYSECRET -register_replication_address $bind_ip_sh -master_uri https://$bind_ip_cm:$MGMT_PORT -auth $USERADMIN:$USERPASS"
+CMD="docker exec -u splunk -ti $sh /opt/splunk/bin/splunk edit cluster-config -mode searchhead -site $s_affinity -secret $MYSECRET -register_replication_address $bind_ip_sh -manager_uri https://$bind_ip_cm:$MGMT_PORT -auth $USERADMIN:$USERPASS"
 OUT=`$CMD`
 OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `    #clean up
 printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
@@ -3778,10 +3845,10 @@ clear_page_starting_from "$R_ROLL"
 for member in $members_list ; do
 	check_load	#throttle during IDXC build
 	printf "[${Purple}$member${NC}]${LightBlue} Making search peer... ${NC}\n"
-	bind_ip_cm=`docker inspect --format '{{ .HostConfig }}' $cm| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
-    bind_ip_idx=`docker inspect --format '{{ .HostConfig }}' $member| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+	bind_ip_cm=`get_bind_ip $cm`
+    bind_ip_idx=`get_bind_ip $member`
 	#-------member config----
-    CMD="docker exec -u splunk -ti $member /opt/splunk/bin/splunk edit cluster-config -mode slave -master_uri https://$bind_ip_cm:$MGMT_PORT -replication_port $REPL_PORT -register_replication_address $bind_ip_idx -cluster_label $label -secret $MYSECRET -auth $USERADMIN:$USERPASS "
+    CMD="docker exec -u splunk -ti $member /opt/splunk/bin/splunk edit cluster-config -mode peer -manager_uri https://$bind_ip_cm:$MGMT_PORT -replication_port $REPL_PORT -register_replication_address $bind_ip_idx -cluster_label $label -secret $MYSECRET -auth $USERADMIN:$USERPASS "
 	OUT=`$CMD`; OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `    #clean up
 	printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 	logline "$CMD" "$member"
@@ -3827,7 +3894,7 @@ local start_time=$(date +%s);
 clear_from_if_screen_ended "$R_ROLL"
 
 #printf "${Yellow} idx[$idx] SITElocation[$SITElocation] site[$site] m_cm_ip[$m_cm_ip] step_pos[$step_pos]";exit		#debug
-bind_ip_idx=`docker inspect --format '{{ .HostConfig }}' $idx| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+bind_ip_idx=`get_bind_ip $idx`
 #from singlesite build
 #CMD="docker exec -u splunk -ti $member /opt/splunk/bin/splunk edit cluster-config -mode slave -master_uri https://$bind_ip_cm:$MGMT_PORT -replication_port $REPL_PORT -register_replication_address $bind_ip_idx -cluster_label $label -secret $MYSECRET -auth $USERADMIN:$USERPASS "
 
@@ -3835,7 +3902,7 @@ bind_ip_idx=`docker inspect --format '{{ .HostConfig }}' $idx| $GREP -o '[0-9]\+
 
 printf "[${Purple}$idx${NC}]${Cyan} Configure Indexer for multi-site ${NC}"
 #splunk edit cluster-config -mode slave -site site1 -master_uri https://10.160.31.200:8089 -replication_port 9887
-CMD="docker exec -u splunk -ti $idx /opt/splunk/bin/splunk edit cluster-config  -mode slave -site $site -master_uri https://$m_cm_ip:$MGMT_PORT -replication_port $REPL_PORT -register_replication_address $bind_ip_idx -secret $MYSECRET -auth $USERADMIN:$USERPASS "
+CMD="docker exec -u splunk -ti $idx /opt/splunk/bin/splunk edit cluster-config  -mode peer -site $site -manager_uri https://$m_cm_ip:$MGMT_PORT -replication_port $REPL_PORT -register_replication_address $bind_ip_idx -secret $MYSECRET -auth $USERADMIN:$USERPASS "
 OUT=`$CMD`
 OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `    #clean up
 
@@ -3862,7 +3929,7 @@ local start_time=$(date +%s);
 #clear_page_starting_from "$R_ROLL"
 clear_from_if_screen_ended "$R_ROLL"
 
-bind_ip_dep=`docker inspect --format '{{ .HostConfig }}' $dep| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+bind_ip_dep=`get_bind_ip $dep`
 txt="\n #-----Modified by splunk-n-box ----\n [shclustering]\n pass4SymmKey = $MYSECRET \n shcluster_label = $label\n"
 #printf "%b" "$txt" >> $MOUNTPOINT/$dep/etc/system/local/server.conf	#cheesy fix!
 printf "%b" "$txt" > $TMP_DIR/server.conf.tmp
@@ -3896,7 +3963,7 @@ captain=`echo $members_list| cut -d" " -f$len`
 printf "${LightRed}DEBUG:=> ${Yellow}In $FUNCNAME(): ${Purple} members_list:[$members_list] captain[$captain]${NC}\n" >&6
 server_list=""
 for member in $members_list; do
-    bind_ip_sh=`docker inspect --format '{{ .HostConfig }}' $member| $GREP -o '[0-9]\+[.][0-9]\+[.][0-9]\+[.][0-9]\+'| head -1`
+    bind_ip_sh=`get_bind_ip $member`
 	server_list="$server_list""https://$bind_ip_sh:$MGMT_PORT,"
 done
 server_list=`echo ${server_list%?}`  # remove last comma in string
@@ -3961,7 +4028,7 @@ local start_time=$(date +%s);
 clear_from_if_screen_ended "$R_ROLL"
 
 #-------CM config---
-CMD="docker exec -u splunk -ti $cm /opt/splunk/bin/splunk edit cluster-config  -mode master -replication_factor $rf -search_factor $sf -secret $MYSECRET -cluster_label $label -auth $USERADMIN:$USERPASS "
+CMD="docker exec -u splunk -ti $cm /opt/splunk/bin/splunk edit cluster-config  -mode manager -replication_factor $rf -search_factor $sf -secret $MYSECRET -cluster_label $label -auth $USERADMIN:$USERPASS "
 OUT=`$CMD`; OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `   # clean it up
 printf "${DarkGray}CMD:[$CMD]${NC}\n" >&4
 logline "$CMD" "$cm"
@@ -3985,12 +4052,12 @@ local start_time=$(date +%s);
 clear_from_if_screen_ended "$R_ROLL"
 
 sites_list=`echo "$sites_list" | sed 's/ /,/g'`		#add commas to string as expected by cluster-config command
-m_cm_ip=`docker port $m_cm| awk '{print $3}'| cut -d":" -f1|head -1 `
+m_cm_ip=`get_bind_ip $m_cm`
 
 #splunk edit cluster-config -mode master -multisite true -available_sites site1,site2 -site site1 -site_replication_factor origin:2,total:3 -site_search_factor origin:1,total:2
 
 #CMD="docker exec -u splunk -ti $m_cm /opt/splunk/bin/splunk edit cluster-config -mode master -multisite true -available_sites $sites_list -site site1 -site_replication_factor origin:2,total:3 -site_search_factor origin:1,total:2 -secret $MYSECRET -auth $USERADMIN:$USERPASS "
-CMD="docker exec -u splunk -ti $m_cm /opt/splunk/bin/splunk edit cluster-config -mode master -multisite true -available_sites $sites_list -site site1 -site_replication_factor $site_rp -site_search_factor $site_sf -secret $MYSECRET -auth $USERADMIN:$USERPASS "
+CMD="docker exec -u splunk -ti $m_cm /opt/splunk/bin/splunk edit cluster-config -mode manager -multisite true -available_sites $sites_list -site site1 -site_replication_factor $site_rp -site_search_factor $site_sf -secret $MYSECRET -auth $USERADMIN:$USERPASS "
 OUT=`$CMD`
 OUT=`echo $OUT | sed -e 's/^M//g' | tr -d '\r' | tr -d '\n' `    #clean up
 printf " ${Yellow}${ARROW_EMOJI}${NC}Setting multi-site to true... " >&3 ; display_output "$OUT" "property has been edited" "3"
@@ -4684,7 +4751,7 @@ for loc in $loc_list; do
 	osx_say "Finished step 2, $site, creating $IDXcount IDXC generic hosts"
 
 	#--- configure idx's to members----------------------------------------------
-	m_cm_ip=`docker port $m_cm| awk '{print $3}'| cut -d":" -f1|head -1 `
+	m_cm_ip=`get_bind_ip $m_cm`
 #	highlight_site=$(color_selected "$SITElocation" "$LOCATIONSlist_clean")
 	print_step_bar_from "$R_STEP3" "${ACTIVE_TXT_COLOR}${YELLOW_LEFTHAND_EMOJI} " "STEP#3: IDXC [configure members for multisite]"
 	clear_page_starting_from "$R_ROLL"
@@ -4964,8 +5031,7 @@ fi
 
 #docker pull hub.docker.com/r/mhassan/splunk
 #echo "[docker pull $hub$image_name]"
-cached=`docker images | $GREP $image_name`
-if [ -z "$cached" ]; then
+if ! image_is_cached "$hub$image_name"; then
 	t_start=$(date +%s)
       	#printf "    ${Purple}$image_name:${NC}["
       	printf "Downloading ${Purple}$image_name${NC}:["
@@ -5586,47 +5652,24 @@ printf "\n\n"
 
 #count=`wc -l $CMD`
 
-printf "${Blue}Retrieving list from: [https://hub.docker.com/u/splunknbox/]...\n${NC}"
-CMD="docker search splunknbox"; OUT=`$CMD`
-#printf "$OUT" #| awk '{printf $1}'
-
-retrieved_images_list=`printf "$OUT"|$GREP -v NAME|awk '{print $1" "}'| sort -r | tr -d '\n' `
-declare -a list=($retrieved_images_list)
-printf "${BoldWhiteOnRed}             IMAGE NAME%-22s CREATED%-7s SIZE%-15s AUTHOR%-20s${NC}\n"
-counter=1
-#count=`docker images --format "{{.ID}}" | wc -l`
-for image_name in $retrieved_images_list; do
-	if [ "$image_name" == "$DEFAULT_SPLUNK_IMAGE" ]; then
-    	printf "${Purple}%-2s${NC})${YELLOW_LEFTHAND_EMOJI} ${Purple}%-40s${NC}" "$counter" "$image_name"
-	else
-    	printf "${Purple}%-2s${NC})  ${Purple}%-40s${NC}" "$counter" "$image_name"
-	fi
-	created=`docker images "$image_name" | $GREP -v REPOSITORY | awk '{print $4,$5,$6}'`
-	size=`docker images "$image_name" | $GREP -v REPOSITORY | awk '{print $7,$8}'`
-    if [ -n "$created" ]; then
-        author=`docker inspect $image_name |$GREP -i author| cut -d":" -f2|sed 's/"//g'|sed 's/,//g'`
-        printf "%-12s %-7s %-10s ${NC}\n" "$created" "$size" "$author"
-    else
-        printf "${DarkGray}NOT CACHED! ${NC}\n"
-    fi
-    let counter++
-	clear_from_if_screen_ended "$R_STEP2" "p"
-done
-#display_all_images "DEMO"
-count=0
+printf "Current default image: ${Yellow}$DEFAULT_SPLUNK_IMAGE${NC}\n\n"
+printf "Official tags are listed at ${Blue}https://hub.docker.com/r/splunk/splunk/tags${NC}\n"
+printf "Examples: ${Purple}latest${NC}, ${Purple}10.0${NC}, ${Purple}9.4${NC}, or an exact release like ${Purple}9.4.3${NC}\n\n"
+printf "Locally cached splunk images:\n"
+docker images "$SPLUNK_IMAGE_REPO" --format "   {{.Repository}}:{{.Tag}}  ({{.Size}})" 2>/dev/null
 echo
-choice=""
-read -p $'Choose a number <\033[1;32mB\e[0m:Go Back>: ' choice
-if [ "$choice" == "B" ] || [ "$choice" == "b" ]; then  return 0; fi
-if [ -n "$choice" ]; then
-		START=$(date +%s)
-		image_name=(${list[$choice - 1]})
-		progress_bar_image_download "$image_name"
-		DEFAULT_SPLUNK_IMAGE="$image_name"
-		printf "${BrownOrange}${WARNING_EMOJI} Subsequent container builds (except DEMOs) will use the new splunk image ${Yellow}[$image_name]${NC}\n"
-	else
-		return 0
+read -p $'Enter Splunk version tag <\033[1;32mB\e[0m:Go Back>: ' choice
+if [ -z "$choice" ] || [ "$choice" == "B" ] || [ "$choice" == "b" ]; then  return 0; fi
+image_name="$SPLUNK_IMAGE_REPO:$choice"
+progress_bar_image_download "$image_name"
+if image_is_cached "$image_name"; then
+	SPLUNK_VERSION="$choice"
+	DEFAULT_SPLUNK_IMAGE="$image_name"
+	printf "${BrownOrange}${WARNING_EMOJI} Subsequent container builds will use ${Yellow}[$image_name]${NC}\n"
+else
+	printf "${Red}Could not download [$image_name]. Default image unchanged.${NC}\n"
 fi
+read -p $'\033[1;32mHit <ENTER> to continue...\e[0m'
 
 return 0
 }	#end change_default_splunk_image()
@@ -5859,7 +5902,7 @@ tput cup $(($LINES-5)) $(( ( $COLUMNS - 20 )  / 2 ))
 printf "Checking online version...\n"
 
 rm -fr $TMP_DIR/online_ver.tmp		#start fresh
-wget -qO $TMP_DIR/online_ver.tmp "https://raw.githubusercontent.com/mhassan2/splunk-n-box/master/VERSION.TXT"
+wget -qO $TMP_DIR/online_ver.tmp "https://raw.githubusercontent.com/$UPGRADE_REPO/master/VERSION.TXT"
 online_ver=`cat $TMP_DIR/online_ver.tmp`
 colored_online_ver=`echo $online_ver | awk -F '[.-]' '{print "\033[1;33m" $1 "\033[0;33m." $2 "\033[1;31m-" $3}'`
 #new=`awk -v n1=$online_ver -v n2=$GIT_VER 'BEGIN {if (n1>n2) print ("Y");}'  `
@@ -5891,7 +5934,7 @@ if [ "$upgrade" == "Y" ] && [ -n "$GIT_VER" ] && [ -n "$online_ver" ]; then
 		tput cup $(($LINES-5)) $(( ( $COLUMNS - 40 )  / 2 ))
 		printf "Downloading [$PWD/${0##*/}] >> ${NC}"
 		tput cup $(($LINES-5)) $(( ( $COLUMNS - 70 )  / 2 ))
-		progress_bar_pkg_download "curl -O https://raw.githubusercontent.com/mhassan2/splunk-n-box/master/${0##*/}"
+		progress_bar_pkg_download "curl -O https://raw.githubusercontent.com/$UPGRADE_REPO/master/${0##*/}"
 		sleep 2
 		#curl --max-time 5 -O https://raw.github.com/mhassan2/splunk-n-box/master/${0##*/}
 		chmod 755  ${0##*/}   	#set x permission on splunknbox.sh

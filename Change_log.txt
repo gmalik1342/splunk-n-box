@@ -1,5 +1,19 @@
 ## REVISIONS:
 
+ver 6.0-1 (Nov 2026) - modernized for Splunk 10.x / Docker 29 (Linux)
+-official splunk/splunk image, version selectable (SPLUNK_VERSION or menu)
+-admin password via SPLUNK_PASSWORD; removed changeme reset logic
+-Splunk General Terms acceptance prompt (required by 10.x images)
+-Linux IP aliases via "ip" on a private dummy interface (falls back to lo)
+-cluster CLI: -mode manager/peer, -manager_uri, licenser-localpeer
+-licenses optional: 60-day Enterprise trial when no real *.lic present
+-health-check based readiness wait replaces fixed sleeps
+-bind IP lookup reads HostConfig.PortBindings JSON (works for stopped containers)
+-docker images wrapper for Docker 29 output format; fixed docker network create options
+-fixed start_docker_linux typo, remove_ip_aliases if/fi nesting, lsb_release dependency
+-KV store port 8191 mapped (needed for SHC); demo menus disabled (internal registry)
+-upgrade check points at gmalik1342/splunk-n-box
+
 ver 2.2
 -added wipe clean entire system option
 -GO back menu option is using B now
